@@ -5,16 +5,20 @@
 #include <linux/init.h>
 #include <linux/stat.h>
 #include <linux/mutex.h>
+#include <linux/semaphore.h>
 #include <linux/unistd.h>
 #include <linux/syscalls.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/sched.h>
+#include <linux/mm.h>
+#include <linux/mman.h>
 #include <asm/uaccess.h>
 
-#define FPGA_SEGMENTS 3
+#define FPGA_SEGMENTS 1
 #define BUFFERSIZE 8192
+#define FPGA_MEM_SIZE 8
 
 
 #define FPGA_FIRMWARE_PATH "/sys/class/fpga_manager/fpga0/firmware"
@@ -35,9 +39,11 @@ static int arr_argc = 0;
 #ifndef FPGA_DIST
 #define FPGA_DIST
 
-static int segments[FPGA_SEGMENTS] = {0};
+static int segment_registry[FPGA_SEGMENTS] = {0};
+static int FPGA_PHYS_ADDRESS[FPGA_SEGMENTS] = {0x41200000};
 static DEFINE_MUTEX(segments_mutex);
 static char buffer[BUFFERSIZE];
+
 
 /* 
  * module_param(foo, int, 0000)
@@ -72,6 +78,15 @@ MODULE_PARM_DESC(mystring, "A character string");
 module_param_array(myintArray, int, &arr_argc, 0000);
 MODULE_PARM_DESC(myintArray, "An array of integers");
 */
+
+int map_fpga(int seg_num){
+	
+	struct vm_area_struct* vma = vma_lookup(current->mm, 0);
+	unsigned long pfn = (FPGA_PHYS_ADDRESS[seg_num])>>PAGE_SHIFT;
+	unsigned long size = FPGA_MEM_SIZE;
+	
+	return remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+}
 
 int write_bitstream(const char* bitstream_file_path)
 {
@@ -118,7 +133,7 @@ inline bool is_holder(int pid)
 	mutex_lock(&segments_mutex);
 
 	for(int seg = 0; seg < FPGA_SEGMENTS; seg++){
-		if(segments[seg] == pid) found = true;
+		if(segment_registry[seg] == pid) found = true;
 	}
 
 	mutex_unlock(&segments_mutex);
@@ -134,14 +149,14 @@ void exit_fpga(struct task_struct *tsk){
 	mutex_lock(&segments_mutex);
 
 	for(seg = 0; seg < FPGA_SEGMENTS && !done; seg++){
-		if(segments[seg] == tsk->pid){
+		if(segment_registry[seg] == tsk->pid){
 
 			done = true;
 			
 			/*clear FPGA?*/
 
 			//mark FPGA segment as available
-			segments[seg] = 0;
+			segment_registry[seg] = 0;
 		}
 	}
 
@@ -154,28 +169,38 @@ int request_fpga_segment_handler(void)
 {
 	int seg;
 	bool done = false;
+	void* reg;
+	int fd;
 
 	//Find and reserve first available FPGA segment
 	mutex_lock(&segments_mutex);
 
 	for(seg = 0; seg < FPGA_SEGMENTS && !done; seg++){
-		if(segments[seg] == 0){
+		if(segment_registry[seg] == 0){
 
 			//reserve FPGA for current process
-			segments[seg] = current->pid;
+			segment_registry[seg] = current->pid;
+
+
 			done = true;
 		}
 	}
 
 	mutex_unlock(&segments_mutex);
-
+	printk("\n***seg reserved: %d\n", seg);
 	if(!done) seg = -ENOSEGMENTSAVAILABLE;
 
 	if(seg >= 0){
 		/*do any additional setup*/
+	/*
+		fd = do_sys_open(AT_FDCWD, "/dev/uio0", O_RDWR|O_SYNC, 0);
+		printk("\n***fd: %d\n", fd);
+		reg = (void*)ksys_mmap_pgoff(NULL,1, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+		printk("\n***regs: %d\n", (int)reg);
+		*/
 	}
 
-	return seg;
+	return (int)reg;
 }
 
 int program_fpga_segment_handler(const char* bitstream_file_path)
@@ -203,14 +228,14 @@ int release_fpga_segment_handler(void)
 	mutex_lock(&segments_mutex);
 	
 	for(seg = 0; seg < FPGA_SEGMENTS && !done; seg++){
-		if(segments[seg] == current->pid){
+		if(segment_registry[seg] == current->pid){
 
 			done = true;
 			
 			/*clear FPGA?*/
 
 			//mark FPGA segment as available
-			segments[seg] = 0;
+			segment_registry[seg] = 0;
 		}
 	}
 
@@ -245,22 +270,18 @@ SYSCALL_DEFINE0(release_fpga_segment)
 	return release_fpga_segment_handler();
 }
 
-/*
-static int __init request_fpga_segment_handler_init(void)
+/*************** CPE542 ***************/
+
+long mat_mul(int32_t* left_mat, int32_t* right_mat, uint32_t m, uint32_t n, uint32_t p)
 {
-	
-	mutex_init(&segments_mutex);
-	return 0;
+
+	int ret = 0;
+
+	if(m != p) ret = -EDIMMISMATCH;
+
+
+
+	return ret;
 }
-
-static void __exit request_fpga_segment_handler_exit(void)
-{
-	printk(KERN_INFO "Goodbye, world 5\n");
-}
-
-module_init(request_fpga_segment_handler_init);
-module_exit(request_fpga_segment_handler_exit);
-
-*/
 
 #endif
