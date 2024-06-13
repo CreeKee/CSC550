@@ -1,1 +1,1 @@
-obj-y := csc550.o
+obj-y := csc550.ov

@@ -15,6 +15,7 @@
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <asm/uaccess.h>
+#include <linux/fs.h>
 
 #define FPGA_SEGMENTS 1
 #define BUFFERSIZE 8192
@@ -36,6 +37,10 @@ static int myintArray[2] = { -1, -1 };
 static int arr_argc = 0;
 */
 
+#ifndef AT_FDCWD
+#define AT_FDCWD -100
+#endif
+
 #ifndef FPGA_DIST
 #define FPGA_DIST
 
@@ -43,6 +48,7 @@ static int segment_registry[FPGA_SEGMENTS] = {0};
 static int FPGA_PHYS_ADDRESS[FPGA_SEGMENTS] = {0x41200000};
 static DEFINE_MUTEX(segments_mutex);
 static char buffer[BUFFERSIZE];
+static const char filename[] = "/dev/uio0";
 
 
 /* 
@@ -169,36 +175,41 @@ int request_fpga_segment_handler(void)
 {
 	int seg;
 	bool done = false;
-	void* reg;
-	int fd;
+	void* reg = NULL;
+	int fd = 0;
 
 	//Find and reserve first available FPGA segment
 	mutex_lock(&segments_mutex);
+
+    for(seg = 0; seg < FPGA_SEGMENTS && !done; seg++){
+        if(segment_registry[seg] == current->pid){
+            seg = -ENOSEGMENTSAVAILABLE;
+            done = true;
+        } 
+
+    }
 
 	for(seg = 0; seg < FPGA_SEGMENTS && !done; seg++){
 		if(segment_registry[seg] == 0){
 
 			//reserve FPGA for current process
 			segment_registry[seg] = current->pid;
-
-
 			done = true;
 		}
-	}
 
+        
+	}
+    if(seg >= 0){
+        /*do any additional setup*/
+        fd = do_sys_open(AT_FDCWD, filename, O_RDWR|O_SYNC, 0);
+        
+        reg = (void*)ksys_mmap_pgoff(NULL,1, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    }
 	mutex_unlock(&segments_mutex);
-	printk("\n***seg reserved: %d\n", seg);
+	
 	if(!done) seg = -ENOSEGMENTSAVAILABLE;
 
-	if(seg >= 0){
-		/*do any additional setup*/
-	/*
-		fd = do_sys_open(AT_FDCWD, "/dev/uio0", O_RDWR|O_SYNC, 0);
-		printk("\n***fd: %d\n", fd);
-		reg = (void*)ksys_mmap_pgoff(NULL,1, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-		printk("\n***regs: %d\n", (int)reg);
-		*/
-	}
+	
 
 	return (int)reg;
 }
